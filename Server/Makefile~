@@ -1,0 +1,52 @@
+TARGET=server
+
+CLIENT=client
+
+TOPDIR=$(shell pwd)/..
+
+CXD2837DIR=$(shell pwd)/../cxd2837
+
+CXD2872DIR=$(shell pwd)/../cxd2872
+
+ATBMDIR=$(shell pwd)/../GaoTuo
+
+TSPARSE=$(shell pwd)/../TsParse
+
+MAKEARCH=make
+
+#export CC=/home/zxy/vlc/staging_dir/toolchain-mips_r2_gcc-4.6-linaro_uClibc-0.9.33.2/bin/mips-openwrt-linux-uclibc-gcc
+
+INCLUDE=-I../
+
+LIB= -L../ -L../cxd2872 -L../GaoTuo -L../cxd2837 -L../TsParse #-L../cxd2840 
+
+CFLAGS=-lpthread -l9331 -lrt -lcxd2872  -latbm -lcxd2837 -ltsparse #-lcxd2840 
+
+SOURCE=Server.c Tuner_Get_DataThread.c
+
+SOURCE1=Client.c
+
+#BUILD=$(patsubst %.c,%.o,$(SOURCE))
+
+all: prepare $(TARGET) $(CLIENT)
+
+prepare:
+	cd $(CXD2837DIR) && $(MAKEARCH)
+	cd $(CXD2872DIR) && $(MAKEARCH)
+	cd $(TSPARSE) && $(MAKEARCH)
+	cd $(TOPDIR) && $(MAKEARCH)
+	cd $(ATBMDIR) && $(MAKEARCH)
+
+$(TARGET):$(SOURCE)
+	$(CC) -o $@ $^ $(INCLUDE) $(LIB) $(CFLAGS)
+
+$(CLIENT):$(SOURCE1)
+	gcc -o $@ $^ -lpthread 
+
+clean:
+	cd $(CXD2837DIR) && $(MAKEARCH) clean
+	cd $(CXD2872DIR) && $(MAKEARCH) clean
+	cd $(TOPDIR) && $(MAKEARCH) clean
+	cd $(TSPARSE) && $(MAKEARCH) clean
+	cd $(ATBMDIR) && $(MAKEARCH) clean
+	rm client server

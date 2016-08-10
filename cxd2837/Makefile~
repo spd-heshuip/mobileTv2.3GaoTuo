@@ -1,0 +1,24 @@
+TARGET = libcxd2837.so
+#TARGET = image
+
+#CC=/disk4/staging_dir/toolchain-mips_r2_gcc-4.6-linaro_uClibc-0.9.33.2/bin/mips-openwrt-linux-uclibc-gcc
+
+INCLUDE=-I./Server
+
+CFLAGS=-lstdc++ -lrt 
+
+SOURCE=$(wildcard *.c)
+
+BUILD=$(patsubst %.c,%.o,$(SOURCE))
+
+all: $(TARGET) 
+
+$(BUILD):$(SOURCE)
+	@$(CC) -fPIC -Wall -c $^ $(INCLUDE) $(CFLAGS)
+$(TARGET):$(BUILD)
+	@$(CC) -shared -fPIC -o $@ $^ $(INCLUDE)
+	cp $(TARGET) /usr/lib
+
+clean:
+	-@rm -f $(TARGET) *.o
+	cd /usr/lib/ && rm $(TARGET)

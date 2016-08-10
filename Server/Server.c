@@ -1,0 +1,1045 @@
+#include "Server.h"
+
+/*延时函数*/
+void Delay(int sec,int usec)
+{
+	struct timeval time;
+	time.tv_sec = sec;
+	time.tv_usec = usec;
+	select(0,NULL,NULL,NULL,&time);
+}
+
+int setSendTimeOut(int fd ,int delay)
+{
+	int maxfd = fd;
+	int ret = 0;
+	struct timeval time;	
+	fd_set sendFds;		
+
+	FD_ZERO(&sendFds);
+	FD_SET(fd,&sendFds);	
+	/*设置超时等待时间*/
+	time.tv_sec = delay;
+	time.tv_usec = 0;
+	do
+	{	
+		ret = select(maxfd+1,NULL,&sendFds,NULL,&time);
+	}
+	while(ret < 0 && errno == EINTR);	
+	
+	if(ret == 0)
+	{
+		printf("Time Out!\n");
+		errno = ETIMEDOUT;
+		ret = -1;
+	}else if(ret > 0)	
+		return 0;
+	return ret;
+}
+
+/*获取pid过滤列表*/
+void Get_Pid_List(char *xml)
+{
+	char str[10];
+	pid_count = 0;
+	int k = 0;
+	int z = 0;
+	int flag = 0;
+	while(xml[k] != '\0' && pid_count < 32)
+	{
+		if(xml[k] == ',')
+		{
+			Pid_List[pid_count] = atoi(strncpy(str,xml+z+flag,k-z-flag));
+			pid_count++;
+			z = k;
+			flag = 1;
+			memset(str,0,10);
+		}
+		k++;
+	}
+
+	Pid_List[pid_count++] = atoi(strncpy(str,xml+z+flag,strlen(xml)-z));
+
+	int count = 0;
+	while(count < pid_count)
+	{
+		printf("Pid_List[%d] = %d\n",count,Pid_List[count]);
+		count++;
+	}
+
+	return;
+}
+/*获取特定格式字符串中的整数*/
+int IntToString(unsigned int* table,unsigned char* msg,int length)
+{
+	unsigned int* p = table;
+	int num = 0;
+	int numLength = 0;
+	while(num < length && p[num] != 0)
+	{
+		sprintf(msg + numLength,"%d,",p[num]);
+		num++;
+		numLength = strlen(msg);
+	}
+
+	msg[numLength-1] = '\0';
+	printf("num = %d\n",num);
+	printf("xml = %s\n",msg);
+	return num;
+}
+/*获取指定参数的值
+@param xml：需要解析的字符串
+@param paramName：解析的参数名
+@param start：开始字符
+@param end：结束字符
+@param value：解析值
+**/
+bool  GetParamValue( const char *xml, const char *paramName, const char *start, const char *end, char *value )
+{
+	const char *p = strstr( xml, paramName );
+	if( p == NULL )
+		return false ;
+	
+	const char *pStart = strstr( p, start );
+	if( pStart == NULL )
+		return false ;
+
+	if( strlen(pStart) <= strlen(start) )
+		return false ;
+
+	const char *pEnd = strstr( pStart+strlen(start), end ) ;
+	if( pEnd == NULL )
+		return false ;
+
+	int len = pEnd-pStart-strlen(start);
+	if( len > 256 )
+		len = 256 ;
+
+	strncpy( value, pStart+strlen(start), len ) ;
+	value[len] = '\0';
+
+	return true ;
+}
+
+int GetRequestValue( const char*xml,const char* paramName,char* type)
+{
+	bool bOK = GetParamValue( xml, paramName, "\"", "\"", type ) ;
+	if( !bOK )
+		return -1 ;
+
+	return 0;
+}
+/*关闭UDP线程和通讯线程*/
+static void Clear()
+{
+
+}
+/*清除标志位*/
+void Clean(bool islogout)
+{
+	printf("clean something!\n");
+	if(PTHREAD_FLAG)
+		StopTsThread();	
+	Login_Flag = false;
+	Lock_Freq_Flag = false;
+	
+	if(UDP_FD > 0)
+		close(UDP_FD);
+	if(connect_fd > 0)
+	{
+		close(connect_fd);
+		connect_fd = -1;
+	}
+#if 1
+	if(islogout)
+	{
+		if(HB_Sock > 0)
+		{
+			pthread_cancel(HeartBeartThread);
+			close(HB_Sock);	
+			HB_Sock = -1;
+		}	
+	}
+
+	if(Tcp_Sock > 0)
+	{	
+		close(Tcp_Sock);
+		Tcp_Sock = -1;
+	}
+	if(TCP_FD > 0)
+	{
+		close(TCP_FD);
+		TCP_FD = -1;
+	}
+#endif
+	if(&attr != NULL)
+		pthread_attr_destroy(&attr);	
+	if(&attr2 != NULL)	
+		pthread_attr_destroy(&attr2);	
+	
+	connect_fd = -1;
+	PTHREAD_FLAG = false;
+	Connect_Flag = false;
+	HeartBeartFlag = false;
+	TCP_Flag = false;
+
+	return;
+}
+/*信号处理函数*/
+void SignalHandle(int sig)
+{
+	printf("SignalHandle\n");
+	Clean(true);	
+	return;
+}
+
+int SendMessage(unsigned char* pSendMessage)
+{
+	if(connect_fd <= 0)
+		return -1;
+	int ret = setSendTimeOut(connect_fd,10);
+	if(ret == 0)
+	{
+		ret = send(connect_fd,pSendMessage,strlen(pSendMessage),0);
+		if(ret == strlen(pSendMessage))
+			printf("send Ack Message Success!\n");
+		else
+			return -1;	
+	}
+	else if(ret < 0 && errno == ETIMEDOUT)
+	{
+		perror("Send login_Ack time out!\n");
+		close(connect_fd);
+		connect_fd = -1;
+		return -1;
+
+	}
+	return ret;
+}
+
+int filterTsStreamAndSend()
+{
+	int i = 0;
+	int isOk = 0;
+	while(i < 5)
+	{
+		Delay(1,5000);
+		if(parseOkFlag)
+		{
+			isOk = setProgramAndPidFilter();
+			if(PID_FILTER_FLAG && isOk >= 0)
+			{
+				StartTsThread();	
+				PTHREAD_FLAG = true;
+				break;	
+			}else if(isOk == -2)
+				return -1;
+		}
+		i++;
+	}
+	if(!PID_FILTER_FLAG || isOk < 0)
+		return -1;
+	return 0;
+}
+
+/*Check Signal Lock*/
+int checkLock_req()
+{
+	int ret = 0;
+	printf("check Lock Thread....\n");
+	ret = 0;//CXD2840_CheckTSLock();	
+	if(ret != 1 || Tcp_Sock < 0 || TCP_FD < 0)
+	{
+#if 1
+		unsigned char pSendMessage[1024];
+		int status = -1;
+		if(TCP_FD < 0 || Tcp_Sock < 0)
+			status = -2;
+		sprintf(pSendMessage,"<msg type=\"check_lock_ack\"><ack_info ret=\"%d\" errmsg=\"OK\"/></msg>",status);
+		ret = SendMessage(pSendMessage);
+		if(ret < 0)
+			return -1;
+#endif	
+	}
+	else if(ret == 1 && Tcp_Sock > 0 && TCP_FD > 0)
+	{
+		unsigned char pSendMessage[1024];
+		sprintf(pSendMessage,"<msg type=\"check_lock_ack\"><ack_info ret=\"0\" errmsg=\"OK\"/></msg>");
+		ret = SendMessage(pSendMessage);
+		if(ret < 0)
+			return -1;		
+	}	
+
+	return 0;		
+}
+
+/*登录请求处理*/
+int login_req(char *pRecvMessage,char *Value)
+{
+		int ret = GetRequestValue(pRecvMessage,"port",Value);
+		if(ret < 0)
+			return -1;
+		RTP_Port = atoi(Value);
+		unsigned char* pSendMessage = "<msg type=\"login_ack\"><ack_info ret=\"0\" errmsg=\"OK\"<deviceinfo device_name=\"Mobile Tv Box\"device_type=\"Beta2.1\" tv_type=\"ISDBT/DVB-T/T2\" hwversion=\"2.1\" softwareversion=\"2.1\"/></msg>";
+		ret = SendMessage(pSendMessage);
+		if(ret < 0)
+			return -1;
+		Login_Flag = true;					
+		return 0;
+
+}
+/*注销登录请求处理*/
+int logout_req()
+{
+#if 0
+	unsigned char* pSendMessage = "<msg type=\"logout_ack\"><ack_info ret=\"0\" errmsg=\"OK\" /></msg>";
+	int ret = SendMessage(pSendMessage);
+	if(ret < 0)
+		return -1;
+#endif
+	printf("logout_req\n");
+	if(Connect_Flag)
+		Clean(true);
+	return 0;
+}
+/*锁定频点请求处理*/
+int tune_req(char *pRecvMessage,char *Value)
+{
+	if(PTHREAD_FLAG)
+	{		
+		StopTsThread();
+		PTHREAD_FLAG = false;	
+	}	
+	int ret = GetRequestValue(pRecvMessage,"tv_type",Value);
+	if((strcmp(Value,"DVB-T")) == 0)
+	{
+		Tv_type = 1;
+	}
+	else if((strcmp(Value,"DVB-T2")) == 0)
+	{	
+		Tv_type = 2;
+	}
+	else if(strcmp(Value,"DTMB") == 0)
+		Tv_type = 3;	
+	Tv_type = 3;	
+	printf("Tv_type=%d\n",Tv_type);
+
+	ret = GetRequestValue(pRecvMessage,"freq",Value);
+	if(ret < 0)
+	{
+		perror("get freq fail!\n");
+		return -1;
+	}
+	freq = atoi(Value)/1000;		
+	printf("freq=%d\n",freq);
+
+	ret = GetRequestValue(pRecvMessage,"bandwidth",Value);
+	if(ret < 0)
+	{
+		perror("get bandwidth fail!\n");
+		return -1;
+	}
+	if(Tv_type == 2)
+		bandwidth = atoi(Value);
+	else if(Tv_type == 1)
+		bandwidth = atoi(Value)/1000;
+	printf("bandwidth=%d\n",bandwidth);
+
+	ret = GetRequestValue(pRecvMessage,"plp",Value);
+	if(ret < 0)
+	{
+		perror("get plp fail!\n");
+		return -1;
+	}		
+	plp = atoi(Value);
+	printf("plp=%d\n",plp);
+
+	ret = GetRequestValue(pRecvMessage,"programNumber",Value);
+	if(ret < 0)
+	{
+		perror("get program number fail!");
+		programNumber = 0;
+//		return -1;
+	}
+	else
+	{
+		programNumber = atoi(Value);
+		printf("program number = %d\n",programNumber);		
+	}
+	rtl2832u_streaming_ctrl(0);
+	if(lastLockFreq != freq || Lock_Freq_Flag == false || ATBM88xx_CheckLock() != 1)
+	{
+		ret = Tuner_Lock(Tv_type,freq*1000,bandwidth,plp);
+		if(ret < 0)
+		{
+			printf("#########################\n");
+			printf("Tuner lock fail!\n");
+			printf("#########################\n");
+			lastLockFreq = freq;
+			Lock_Freq_Flag = false;
+			unsigned char pSendMessage[1024];
+			int status = -1;
+			sprintf(pSendMessage,"<msg type=\"tuner_ack\"><ack_info ret=\"%d\" errmsg=\"OK\"/></msg>",status);
+			ret = SendMessage(pSendMessage);
+			if(ret < 0)
+				return -1;
+			return -1;				
+		}	
+	}
+	lastLockFreq = freq;
+	Lock_Freq_Flag = true;
+	
+	if(Lock_Freq_Flag)
+	{
+		int i = 0;
+		for(i=0;i<5;i++)
+		{
+			ret = disable_pid_filter();
+			if(ret >= 0)
+				break;	
+		}
+		rtl2832u_streaming_ctrl(1);
+		if(ret >= 0)
+		{
+			StartTsThread();
+			PTHREAD_FLAG = true;
+			if(programNumber > 0)
+			{
+				ret = filterTsStreamAndSend();
+				if(ret < 0)
+				{
+					StopTsThread();
+					unsigned char pSendMessage[1024];
+					int status = -1;
+					sprintf(pSendMessage,"<msg type=\"tuner_ack\"><ack_info ret=\"%d\" errmsg=\"OK\"/></msg>",status);
+					ret = SendMessage(pSendMessage);
+					if(ret < 0)
+						return -1;
+					return 0;	
+				}
+			}
+
+		}
+		else
+		{
+			printf("#######################\n");
+			printf("disable filter fail!\n");
+			printf("#######################\n");	
+			return -1;
+		}						
+	}
+
+	return 0;		
+}
+
+/*ReLock*/
+int relock()
+{
+	printf("relock.......\n");
+
+	int ret = Tuner_Lock(Tv_type,freq*1000,bandwidth,plp);
+	if(ret < 0)
+	{
+		printf("#########################\n");
+		printf("Tuner lock fail!\n");
+		printf("#########################\n");
+		lastLockFreq = freq;
+		unsigned char pSendMessage[1024];
+		int status = -1;
+		sprintf(pSendMessage,"<msg type=\"relock_ack\"><ack_info ret=\"%d\" errmsg=\"OK\"/></msg>",status);
+		ret = SendMessage(pSendMessage);
+		if(ret < 0)
+			return -1;
+		return -1;				
+	}
+
+	unsigned char pSendMessage[1024];
+	sprintf(pSendMessage,"<msg type=\"relock_ack\"><ack_info ret=\"0\" errmsg=\"OK\"/></msg>");
+	ret = SendMessage(pSendMessage);
+	if(ret < 0)
+		return -1;	
+	return 0;
+}
+
+/*信号状态请求处理*/
+int signal_status_req()
+{
+	if(Login_Flag && PTHREAD_FLAG)
+	{	
+		if(Lock_Freq_Flag)
+		{
+			unsigned char pSendMessage[1024];
+			int strength = Get_SSI_Info(Tv_type);
+			int quality = Get_Quality_Info();
+		//	int qam = ATBM_GetQamIndex();
+		//	ATBMFrameErrorRatio();
+			printf("strength = %d\n",strength);
+			printf("quality = %d\n",quality);
+		//	printf("qam = %d\n",qam);
+			sprintf(pSendMessage,"<msg type=\"signal_status_ack\"><ack_info ret=\"0\" errmsg=\"OK\" /><signal_status strength=\"%d\" quality=\"%d\" qam=\"%d\"/></msg>",strength,quality,0);
+			int ret = SendMessage(pSendMessage);
+			if(ret < 0)
+				return -1;
+		}
+	}
+	return 0;		
+}
+/*停止传输UDP流请求处理*/
+int stop_stream_req()
+{
+	int ret;
+	if(PTHREAD_FLAG)
+	{
+		unsigned char pSendMessage[1024];
+		PTHREAD_FLAG = false;
+		AcceptFlag = 0;
+		TCP_Flag = false;
+		isCheckContinue = false;
+		rtl2832u_streaming_ctrl(0);
+		StopTsThread();
+		if(TCP_FD > 0)
+		{		
+			close(TCP_FD);
+			TCP_FD = -1;
+		}		
+		if(Tcp_Sock > 0)
+		{
+			close(Tcp_Sock);
+			Tcp_Sock = -1;
+		}
+#if 0
+		sprintf(pSendMessage,"<msg type=\"stop_stream_ack\"><ack info ret=\"0\" errmsg=\"OK\"></msg>");
+		ret = SendMessage(pSendMessage);
+		if(ret < 0)
+			return -1;
+#endif
+	}
+	else
+	{
+		isCheckContinue = false;
+		unsigned char pSendMessage[1024];
+#if 0
+		sprintf(pSendMessage,"<msg type=\"stop_stream_ack\"><ack info ret=\"0\" errmsg=\"OK\"></msg>");
+		ret = SendMessage(pSendMessage);
+		if(ret < 0)
+			return -1;		
+#endif
+	}
+	return 0;
+}
+/*Pid过滤请求处理*/
+int pid_filter_req(char *pRecvMessage,char *Value)
+{
+	if(Lock_Freq_Flag)
+	{
+		unsigned char pSendMessage[1024];
+		if(PTHREAD_FLAG)		
+			StopTsThread();
+		int ret = 0;
+		ret = GetRequestValue(pRecvMessage,"pid_list",Value);
+		if(ret < 0)
+		{
+			printf("get pid_list fail!\n");
+			return -1;
+		}
+		printf("Value = %s\n",Value);
+		if((strcmp(Value,"")) == 0)
+		{
+			disable_pid_filter();
+			if(ret < 0)
+			{
+				printf("set pid filter fail!\n");			
+				sprintf(pSendMessage,"<msg type=\"Pid_Filter_ack\"><ack info ret=\"%d\"errmsg=\"OK\"></msg>",ret);
+				ret = SendMessage(pSendMessage);
+				if(ret < 0)
+					return -1;	
+			}
+			if(!PTHREAD_FLAG)
+			{	
+				StartTsThread();
+				PTHREAD_FLAG = true;
+			}			
+			sprintf(pSendMessage,"<msg type=\"Pid_Filter_ack\"><ack info ret=\"0\"errmsg=\"ok\"></msg>",ret);
+			ret = SendMessage(pSendMessage);
+			if(ret < 0)
+				return -1;
+			return 0;
+		}
+		Get_Pid_List(Value);
+		
+		rtl2832_pid_filter_ctr(0);
+		rtl2832_pid_filter(Pid_List,pid_count);
+		if(ret < 0)
+		{
+			printf("set pid filter fail!\n");			
+			sprintf(pSendMessage,"<msg type=\"Pid_Filter_ack\"><ack info ret=\"%d\"errmsg=\"OK\"></msg>",ret);
+			ret = SendMessage(pSendMessage);
+			if(ret < 0)
+				return -1;	
+		}
+
+		sprintf(pSendMessage,"<msg type=\"Pid_Filter_ack\"><ack info ret=\"%d\"errmsg=\"OK\"></msg>",ret);
+		ret = SendMessage(pSendMessage);
+		if(ret < 0)
+			return -1;
+
+		StartTsThread();
+		PTHREAD_FLAG = true;
+	}		
+	return 0;
+}
+
+/*UDP流请求处理*/
+int start_ts_send_req()
+{
+	if(Lock_Freq_Flag && Login_Flag)
+	{
+		if(!PTHREAD_FLAG)
+		{
+			unsigned char pSendMessage[1024];
+			StartTsThread();
+			PTHREAD_FLAG = true;
+			sprintf(pSendMessage,"<msg type=\"Start_Ts_Ack\"<ack info ret=\"0\"errmsg=\"OK\"></msg>");
+			int ret = SendMessage(pSendMessage);
+			if(ret < 0)
+				return -1;
+		}
+	}
+}
+
+/*客户端请求类型解析处理*/
+REQUEST_TYPE Type(char* Value)
+{
+	if(Value == NULL)
+		return -1;
+	if((strcmp(Value,"login_req")) == 0)
+		return LOGIN_REQ;
+	else if((strcmp(Value,"logout_req")) == 0)
+		return LOGOUT_REQ;
+	else if((strcmp(Value,"tune_req")) == 0)
+		return TUNE_REQ;
+	else if((strcmp(Value,"signal_status_req")) == 0)
+		return SIGNAL_STATUS_REQ;
+	else if((strcmp(Value,"stop_stream_req")) == 0)
+		return STOP_STREAM_REQ;
+	else if((strcmp(Value,"Pid_Filter_req")) == 0)
+		return PID_FILTER_REQ;
+	else if((strcmp(Value,"Switch_Mode_req")) == 0)
+		return SWITCH_MODE_REQ;
+	else if((strcmp(Value,"Start_TS_Send")) == 0)
+		return START_TS_SEND_REQ;
+	else if((strcmp(Value,"Check_Lock_req")) == 0)
+		return CHECK_LOCK_REQ;
+	else if((strcmp(Value,"Relock_req")) == 0)
+		return RELOCK_REQ;
+	else 
+		return -1;
+}
+
+/*通讯处理*/
+int ExchangeMessage(char *pRecvMessage )
+{
+	if(connect_fd <= 0)
+		return -1;
+
+	int ret = recv(connect_fd,pRecvMessage,1024,0);
+	if(ret <= 0)
+	{
+		close(connect_fd);
+		connect_fd = -1;
+		return -1;
+	}
+	pRecvMessage[ret] = '\0' ;
+
+	printf("Recv Message:%s\n",pRecvMessage);
+
+	if( strncmp( pRecvMessage, "<msg", 4 ) != 0 )
+	{
+		printf("The Msg's not startwith <msg!\n");
+		return -1 ;
+	}
+
+	if(strncmp( &pRecvMessage[ret-6], "</msg>", 6 ) != 0 )
+	{
+		printf("The Msg's not end with </msg>!\n");
+		return -1 ;
+	}
+	/*获取请求类型*/
+	unsigned char* paramName = "type";
+	char Value[256];
+	ret = GetRequestValue(pRecvMessage,paramName,Value);
+	if(ret < 0)
+	{
+		printf("can't get type name!\n");		
+		return -1;
+	}
+
+	printf("Request type:%s\n",Value);
+	
+	REQUEST_TYPE type = Type(Value);
+	if(type < 0 )
+		return -1;
+	switch(type)
+	{
+		case LOGIN_REQ:
+			ret  = login_req(pRecvMessage,Value);
+			if(ret < 0)
+				return -1;		
+			break;
+		case LOGOUT_REQ:
+			ret = logout_req();
+			if(ret < 0)
+				return -1;			
+			break;
+		case TUNE_REQ:
+			ret = tune_req(pRecvMessage,Value);
+			if(ret < 0)
+				return -1;
+			break;
+		case SIGNAL_STATUS_REQ:
+			printf("get signal status...\n");
+			ret = signal_status_req();
+			if(ret < 0)
+				return -1;			
+			break;
+		case STOP_STREAM_REQ:
+			ret = stop_stream_req();
+			if(ret < 0)
+				return -1;			
+			break;
+		case PID_FILTER_REQ:
+			ret = pid_filter_req(pRecvMessage,Value);
+			if(ret < 0)
+				return -1;
+			break;
+		case START_TS_SEND_REQ:
+			ret = start_ts_send_req();	
+			if(ret < 0)
+				return -1;		
+			break;
+		case CHECK_LOCK_REQ:
+			ret = checkLock_req();
+			if(ret < 0)
+				return -1;
+			break;
+		case RELOCK_REQ:
+			ret = relock();	
+			if(ret < 0)
+				return -1;		
+			break;
+		default:
+			break;
+	}
+	return 0;	
+}
+
+/*S/C通讯线程*/
+void* Ack_Data(void *arg)
+{
+	printf("create ack data thread\n");
+	int nMsgfd = *((int *)arg);
+	int ret = 0;
+	char* nMsgBuffer = (char*)malloc(1024 * sizeof(char));
+	if(nMsgBuffer == NULL)
+	{
+		perror("malloc nMsgBuffer fail!\n");
+		close(nMsgfd);
+		close(UDP_FD);
+		Connect_Flag = false;
+		return NULL;
+	}
+	signal(SIGQUIT,SignalHandle);
+	while(1)
+	{
+		if(connect_fd <= 0)
+			break;
+		ret = ExchangeMessage(nMsgBuffer);
+		if(ret < 0)
+		{
+			continue;
+		}
+	}
+#if 1
+	if(Connect_Flag)
+		Clean(true);
+	free(nMsgBuffer);
+	if(&attr != NULL)
+		pthread_attr_destroy(&attr);
+	printf("Ack Thread Quit!\n");
+#endif
+}
+
+int sendFailMessage(unsigned char* buf,int sock)
+{
+	int ret = send(sock,buf,strlen(buf),0);
+	if(ret <= 0)
+	{	
+		perror("send heartbeat fail,Client was down!");
+		return -1;
+	}
+	printf("send fail message success!\n");
+	return 0;
+}
+
+/*心跳包处理与回应*/
+int HeartBeartAck(unsigned char* buf,int sock)
+{	
+	int maxfd = sock;
+	struct timeval time;	
+	unsigned char recv_buf[256];
+	fd_set fds;		
+	
+	int ret = send(sock,buf,strlen(buf),0);
+	if(ret <= 0)
+	{	
+		perror("send heartbeat fail,Client was down!");
+		return -1;
+	}
+	#if 1
+	printf("#######################\n");
+	printf("send heartbeat success!\n");
+	printf("#######################\n");
+	#endif
+	FD_ZERO(&fds);
+	FD_SET(sock,&fds);	
+	/*设置超时等待时间*/
+	time.tv_sec = 3;
+	time.tv_usec = 0;
+
+	ret = select(maxfd+1,&fds,NULL,NULL,&time);
+	if(ret < 0)
+	{
+		printf("select option fail!\n");
+		return -1;
+	}
+	else if(ret == 0)
+	{
+		printf("Time Out! Client down! Please check the Mobile Tv Box\n");
+		FD_CLR(sock,&fds);
+		close(sock);
+		return -1;
+	}
+	if(FD_ISSET(sock,&fds))
+	{
+		memset(recv_buf,0,256);
+		ret = recv(sock,recv_buf,256,0);
+		if(ret < 0)
+		{
+			printf("recv HeartBeart ack fail!\n");
+			return -1;
+		}
+		#if 1
+		printf("#######################\n");
+		printf("recv HeartBeart ack\n");
+		printf("#######################\n");
+		#endif	
+	}	
+	return 0;
+}
+/*心跳包线程*/
+void *HB_Ack(void *arg)
+{
+	printf("create hb ack thread\n");
+	HB_Sock = *((int *)arg);
+	int ret = 0;
+	unsigned char buf[256] = "HeartBeat";
+	signal(SIGQUIT,SignalHandle);
+	while(1)
+	{
+		if(HB_Sock <= 0)
+			break;
+		Delay(3,0);		
+		ret = HeartBeartAck(buf,HB_Sock);		
+		if(ret < 0)
+		{
+			printf("Client was down!\n");			
+			break;
+		}		
+	}
+	if(Connect_Flag)
+		Clean(true);
+	if(&attr2 != NULL)	
+		pthread_attr_destroy(&attr2);
+	printf("HeartBeat Thread Quit!\n");
+}
+/*socket设置*/
+int TCP_Option()
+{
+	int keeplive =1;//detect the network is exception or not;
+	int ret = setsockopt(sockfd,SOL_SOCKET,SO_KEEPALIVE,(void *)&keeplive,sizeof(int));
+	if(ret < 0)
+	{
+		perror("SOL_KEEPLIVE Set fail!\n");
+		return -1;
+	}
+	int KeepIdle = 8;//if there is no data exchange in 5 seconds,start to detect;
+	int KeepInterval = 3;   //detecttion time interval in 3 seconds;
+	int KeepCount = 3;//detecttion times;
+	struct timeval nTimeOut = {5,0};
+	int Reuse = 1;
+
+	ret = setsockopt(sockfd,SOL_TCP,TCP_KEEPIDLE,(void *)&KeepIdle,sizeof(int));
+	if(ret < 0)
+		return -1;
+	ret = setsockopt(sockfd,SOL_TCP,TCP_KEEPINTVL,(void *)&KeepInterval,sizeof(int));
+	if(ret < 0)
+		return -1;
+	ret = setsockopt(sockfd,SOL_TCP,TCP_KEEPCNT,(void *)&KeepCount,sizeof(int));
+	if(ret < 0)
+		return -1;
+
+	ret  = setsockopt(sockfd,SOL_SOCKET,SO_REUSEADDR,(const void *)&Reuse,sizeof(int));
+	if(ret < 0)
+		return -1;
+	ret = setsockopt(sockfd,SOL_SOCKET,SO_SNDTIMEO,&nTimeOut,sizeof(nTimeOut));
+	if(ret < 0)
+		return -1;
+
+	return 0;
+}
+
+int set_pthread_policy(pthread_attr_t* attr,int policy,struct sched_param* param)
+{
+	int ret = pthread_attr_init(attr);
+	if(ret < 0)
+		return -1;
+	(*param).sched_priority = policy;
+	ret = pthread_attr_setschedpolicy(attr,SCHED_RR);
+	if(ret < 0)
+		return -1;
+	ret = pthread_attr_setschedparam(attr,param);
+	if(ret < 0)
+		return -1;
+	ret = pthread_attr_setinheritsched(attr,PTHREAD_EXPLICIT_SCHED);
+	if(ret < 0)
+		return -1;
+
+	return 0;	
+}
+
+
+/*创建服务器*/
+int Create_Server()
+{	
+	int ret = 0;
+	/*Tuner初始化*/
+#if 1
+	ret = Tuner_Init();
+	if(ret < 0)
+		return -1;
+#endif
+	struct sockaddr_in serv_addr;
+	
+	sockfd = socket(AF_INET,SOCK_STREAM,0);
+	if(sockfd < 0)
+	{	
+		perror("create server socket fail!\n");
+		return -1;
+	}
+	
+	ret = TCP_Option();
+	if(ret < 0)
+	{
+		printf("Set Tcp Option fail!\n");
+		return -1;
+	}
+
+	memset(&serv_addr,0,sizeof(struct sockaddr_in));
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	serv_addr.sin_port = htons(SERV_PORT);
+	
+	if((bind(sockfd,(struct sockaddr *)&serv_addr,sizeof(serv_addr))) < 0)
+	{
+		perror("bind server socket fail!\n");
+		close(sockfd);
+		return -1;
+	}
+	
+	if((listen(sockfd,1)) < 0)
+	{
+		perror("Listen server socket fail!\n");
+		close(sockfd);
+		return -1;
+	}
+	
+	int Flag = 0;
+	int size_cliaddr = sizeof(cli_addr);
+	while(1)
+	{
+		New_Sockfd = accept(sockfd,(struct sockaddr *)&New_Cli_Addr,&size_cliaddr);
+		if(New_Sockfd < 0)
+		{	
+			if(errno == EINTR)
+				continue;
+			perror("accept fail!\n");
+			close(sockfd);
+			return -1;
+		}
+		Flag = 1;
+		if(!Connect_Flag)
+		{	
+			connect_fd = New_Sockfd;
+			cli_addr = New_Cli_Addr; 
+			Connect_Flag = true;
+			Flag = 0;
+
+			ret = set_pthread_policy(&attr,85,&param);
+			if(ret < 0)
+				printf("set Ack-pthread policy fail!\n");
+			
+			ret = pthread_create(&nAck_Thread,&attr,Ack_Data,(void *)&connect_fd);
+			if(ret < 0)
+			{
+				perror("create thread fail!\n");
+				close(connect_fd);
+				close(sockfd);
+				return -1;
+			}
+		
+		}
+#if 1
+		/*开启心跳线程，实时检测客户端在线状态*/
+		if(!HeartBeartFlag && Connect_Flag && Flag == 1)
+		{
+			ret = set_pthread_policy(&attr2,10,&param);
+			if(ret < 0)
+				printf("set Heart-pthread policy fail!\n");
+			ret = pthread_create(&HeartBeartThread,NULL,HB_Ack,(void *)&New_Sockfd);
+			if(ret < 0)
+			{
+				perror("create heart beart thread fail!\n");
+				close(New_Sockfd);
+				close(sockfd);
+				return -1;
+			}
+			HeartBeartFlag = true;
+		}
+#endif
+	}
+	
+	return 0;
+}
+
+
+int main()
+{
+	signal(SIGPIPE,SIG_IGN);	//注册信号处理函数，拦截由于socket无效导致调用send函数所触发的系统信号SIGPIPE（如不处理将会导致程序退出）；
+	int ret = Create_Server();
+	if(ret < 0)
+	{
+		printf("Create Server fail!\n");
+		return -1;
+	}		
+	
+	pthread_join(HeartBeartThread,NULL);
+	pthread_join(nAck_Thread,NULL);
+	
+	printf("############################\n");
+	printf("All Thread Quit,Server Quit!\n");
+	printf("############################\n");
+
+	close(sockfd);
+	return 0;
+}
+

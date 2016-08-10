@@ -1,0 +1,130 @@
+/* Example application code for implementation of ATBM887x driver porting*/
+
+//#include "platform.h"
+#include "atbm888x.h"
+
+//extern int sony_cxd2872_init(void);
+unsigned char TunMode=45,DemMode=35,TunerSMode=1,TunerHV=0;
+
+typedef enum ATBM_ID{
+
+	ATBM8859 = 0,
+	ATBM8878,
+	ATBM8880
+
+}ATBM_ID;
+
+unsigned char ATBM88XX_ID;
+
+#if 0
+/*STB system Init. All customizations should be done here*/
+int main()
+{    
+	
+	//The next function is to initialize demodulator after STB power up. 
+	//It MUST BE the first function to call before any other operation on the demodulator.
+	ATBMPowerOnInit();
+
+	//The next function is to configure demodulator working for DTMB or DVBC demodulation
+	ATBMSetDTMBMode(); //or	ATBMSetDVBCMode(); 
+
+	//The following procedures are to set the tuner's center frequency to switch channel
+	ATBMHoldDSP();
+	ATBMI2CByPassOn();
+	Delayms(5);  
+	Set_Tuner_TDAC2_DTMB(666*1000);// or Set_Tuner_TDAC2_DVBC(666*1000);    //666000Khz
+	Delayms(50);
+	ATBMI2CByPassOff();
+	ATBMStartDSP();
+
+//Optional for spectrum convertion auto checking
+//	ATBMAutoSwapIQ();     //This function needs to be called in case of spectrum covertion existing in broadcasting
+
+
+	return 0;
+}
+
+#endif
+
+int ATBM88xx_Init(void){
+	int ret = ATBMPowerOnInit();
+	ATBMI2CByPassOn();
+	Delayms(5); 
+	ret = sony_cxd2872_init();
+	Delayms(50);
+	ATBMI2CByPassOff();
+	printf("ret = %d\n",ret);
+	return ret;
+}
+
+void ATBM88xx_ChannelLock(unsigned long FrequencyKHz){
+
+	//current_channel_info.current_receiving_mode = terrestrial; 
+	printf("DTMB_MODE\n");
+	ATBMSetDTMBMode();
+	ATBMHoldDSP();
+	ATBMI2CByPassOn();
+	Delayms(5); 
+	sony_cxd2872__SetFreq(1,FrequencyKHz,8000);
+	Delayms(50);
+	ATBMI2CByPassOff();
+	ATBMStartDSP();
+}
+
+unsigned char ATBM88xx_CheckLock(void){
+	return ATBMChannelLockCheck();
+}
+
+unsigned char Check_ATBM88xx_ID(void){
+	unsigned char ATBM88xx_ChipID;
+	ATBMReset(0);
+	ATBM88xx_ChipID = ATBMChipID();
+	printf("ATBM8878_ChipID=%x\n",ATBM88xx_ChipID);
+	if(ATBM88xx_ChipID==0x30){
+		ATBM88XX_ID = ATBM8859;
+		return 1;
+	}
+	else if(ATBM88xx_ChipID==0x40){
+		ATBM88XX_ID = ATBM8880;
+		return 1;
+	}	
+	else{
+		return 0;
+	}
+	return 0;
+}
+
+int ATBM88xx_GetPower(void){
+	int ATBM88xx_Power;
+	
+	if(TunMode==45){
+		ATBMI2CByPassOn();
+		Delayms(5); 
+		ATBM88xx_Power = cxd2872_GetRFlevel();
+		Delayms(50);
+		ATBMI2CByPassOff();
+	}	
+	else{
+		ATBM88xx_Power = ATBMSignalStrength();	
+		ATBM88xx_Power=102-(ATBM88xx_Power/10);
+	//printf("ATMB8878_Power=%d\n",ATMB8878_Power);
+
+	}
+
+	return ATBM88xx_Power;
+}
+
+unsigned char ATBM88xx_GetQuality(void){
+	unsigned char ATBM88xx_Quality;
+	ATBM88xx_Quality = ATBMSignalQuality();
+//printf("ATBM8878_Quality=%d\n",ATBM8878_Quality);
+	return ATBM88xx_Quality;
+}
+
+unsigned char ATBM88xx_GetError(void){
+	unsigned char ATBM88xx_Error;
+	ATBM88xx_Error = ATBMFrameErrorRatio();
+	return ATBM88xx_Error;
+}
+
+

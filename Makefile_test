@@ -1,0 +1,18 @@
+TARGET = ea_api
+
+CFLAGS=-lstdc++ -lrt 
+
+SOURCE=$(wildcard *.c)
+
+BUILD=$(patsubst %.c,%.o,$(SOURCE))
+
+LIBPATH=-L./cxd2837 -L./cxd2872
+
+LIB=-lcxd2837 -lcxd2872
+
+all: clean $(TARGET) 
+
+$(TARGET):$(BUILD)  
+	@$(CC) -o $@ $^ $(LIBPATH) $(LIB) $(CFLAGS)
+clean:
+	-@rm -f $(TARGET) *.o

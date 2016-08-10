@@ -1,0 +1,171 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <pthread.h>
+
+#include <assert.h>
+#include <linux/fb.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <unistd.h>
+ #include <sys/stat.h>
+#include <fcntl.h>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include <errno.h>
+
+#include "rtl2832u_io.h"
+#include "libusb.h"
+#include"lusb0_usb.h"
+
+#define UDP_DEST "192.168.1.3"
+
+extern int E_avl6882_init(void);
+extern int E_avl6882_Setting(int Tx_Mode ,unsigned int fr,unsigned int bw,int Mplpid);
+extern int StartTsThread(void);
+
+extern int  usbi2cinit();
+extern  int rtl2832_init();
+
+
+extern int sony_cxd2837_init();
+extern int sony_cxd2837_DVBT_tun(unsigned long int centerFreqKHz,unsigned int BW_MHz);
+extern int sony_cxd2837_DVBT2_tun(unsigned long int centerFreqKHz,unsigned int BW_kHz);
+extern int sony_cxd2837_GetPower(unsigned char sys);
+
+struct sockaddr_in UDP_Cli;
+int UDP_FD;
+
+
+uint32_t WaitLockTime(uint32_t ms)
+{
+	usleep(ms);
+	return(0);
+}
+
+signed char I2cWrite8( unsigned char chipaddr,unsigned char Reg,unsigned char *Regda,unsigned int dalen,unsigned int unnecessary){ 
+
+	unsigned char Reg_r = Reg;
+	write_rtl2832_stdi2c(chipaddr,&Reg_r,1);
+	write_rtl2832_stdi2c(chipaddr,Regda,dalen);
+}
+signed char I2cRead8(unsigned char chipaddr,unsigned char Reg,unsigned char *Regda,unsigned int dalen){
+	unsigned char Reg_r=Reg;
+	write_rtl2832_stdi2c(chipaddr,&Reg_r,1);
+	read_rtl2832_stdi2c(chipaddr,Regda,dalen);
+}
+signed char I2cRead16_NoStop(unsigned char chipaddr,unsigned int Reg,unsigned char *Regda,unsigned int dalen){
+	unsigned char Reg_r[2];
+	Reg_r[0]=Reg>>8;
+	Reg_r[1]=Reg;
+	write_rtl2832_stdi2c(chipaddr,&Reg_r[0],2);
+	read_rtl2832_stdi2c(chipaddr,Regda,dalen);
+}
+
+
+uint32_t CS_OS_time_now()
+{
+	struct timeval tv;
+	struct timezone tz;
+	gettimeofday(&tv,&tz);
+	return tv.tv_sec;
+}
+
+/*
+** type: 0代表DVB-C，1代表DVB-T，2代表DVB-T2
+*/
+int Get_SSI_Info(unsigned int type)
+{
+	int ret = sony_cxd2837_GetPower(type);
+	return ret;	
+}
+
+int Get_SQI_Info(unsigned int type)
+{
+	int ret = sony_cxd2837_GetQuality(type);
+	return ret;
+}
+
+int rtl2832_usb_init()
+{
+	int err = 0;
+	if(err=usbi2cinit())
+		return err;
+	err=rtl2832_init();
+	return err;
+}
+
+
+
+int Create_Sock_Udp()
+{
+	UDP_FD = socket(AF_INET,SOCK_DGRAM,0);	
+	if(UDP_FD< 0)	
+	{		
+		printf("socket fail!\n");
+		return -1;	
+	}	
+
+	memset(&UDP_Cli,0,sizeof(struct sockaddr_in));	
+	UDP_Cli.sin_family = AF_INET;
+	UDP_Cli.sin_port = htons(8000);
+//	printf("client ip = %s\n",inet_ntoa(cli_addr.sin_addr));
+//	UDP_Cli.sin_addr.s_addr = inet_addr(inet_ntoa(cli_addr.sin_addr));
+	UDP_Cli.sin_addr.s_addr = inet_addr(UDP_DEST);
+
+#if 1
+	int SndBuf = 1024 * 1024 * 2;
+	int ret = setsockopt(UDP_FD,SOL_SOCKET,SO_SNDBUF,(const void*)&SndBuf,sizeof(int));
+	if(ret < 0)
+	{
+		printf("setsockopt SNDBUF fail!\n");
+		return -1;
+	}
+#endif
+	printf("create sock udp success!\n");
+	return 0;
+}
+
+#if 0
+int main()
+{	
+#if 1
+	int ret = Create_Sock_Udp();
+	if(ret < 0)
+	{
+		printf("create udp socket fail!\n");
+		return -1;
+	}
+#endif
+	if(!rtl2832_usb_init())
+	{
+		printf("test a \n");
+		unsigned int uPID[1] = {0x1fff};
+#if 1
+		if(sony_cxd2837_init())
+		{
+			printf("[ERROR]sony_cxd2837_init_failure!\n");
+			getchar();
+		}
+
+		printf("**************************************************\n");
+//		E_avl6882_Setting(1,666,8000,0);
+		sony_cxd2837_DVBT_tun(663000,8);
+//		sony_cxd2837_DVBT2_tun(666,8000);
+#endif
+
+		StartTsThread();
+	}
+	getchar();
+//	free(buf);
+}
+	
+#endif

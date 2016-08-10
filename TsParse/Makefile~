@@ -1,0 +1,22 @@
+TARGET=libtsparse.so
+
+INCLUDE=-I./
+
+CFLAGS=-lrt
+
+SOURCE=$(wildcard *.c)
+
+BUILD=$(patsubst %.c,%.o,$(SOURCE))
+
+all: prepare $(TARGET)
+
+$(BUILD):$(SOURCE)
+	@$(CC) -fPIC -Wall -c $^ $(INCLUDE) $(LIB)
+
+$(TARGET):$(BUILD)
+	@$(CC) -shared -fPIC -o $@ $^ $(INCLUDE)
+	cp $(TARGET) /usr/lib
+
+clean:
+	-@rm -f $(TARGET) *.o
+	cd /usr/lib && rm $(TARGET)
